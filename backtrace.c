@@ -63,7 +63,7 @@ struct find_info {
 	bfd_vma counter;
 	const char *file;
 	const char *func;
-	unsigned line;
+	unsigned int line;
 };
 
 struct output_buffer {
@@ -114,7 +114,7 @@ lookup_section(bfd *abfd, asection *sec, void *opaque_data)
 }
 
 static void
-find(struct bfd_ctx * b, DWORD offset, const char **file, const char **func, unsigned *line)
+find(struct bfd_ctx * b, DWORD offset, const char **file, const char **func, unsigned int *line)
 {
 	struct find_info data;
 	data.func = NULL;
@@ -203,6 +203,7 @@ get_bc(struct bfd_set *set , const char *procname, int *err)
 	}
 	struct bfd_ctx bc;
 	if (init_bfd_ctx(&bc, procname, err)) {
+		printf("init_bfd_ctx fail\n");
 		return NULL;
 	}
 	set->next = calloc(1, sizeof(*set));
@@ -268,12 +269,17 @@ _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT 
 		symbol->MaxNameLength = 254;
 
 		DWORD module_base = SymGetModuleBase(process, frame.AddrPC.Offset);
-
+		if (module_base == 0 ) {
+			printf("SymGetModuleBase fail\n");
+		}
+		bc = NULL;
 		const char * module_name = "[unknown module]";
 		if (module_base && 
 			GetModuleFileNameA((HINSTANCE)module_base, module_name_raw, MAX_PATH)) {
 			module_name = module_name_raw;
 			bc = get_bc(set, module_name, &err);
+		} else {
+			printf("module_base(%ld)=0 or GetModuleFileNameA fail\n", module_base);
 		}
 
 		const char * file = NULL;
@@ -291,6 +297,23 @@ _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT 
 			}
 			else {
 				file = "[unknown file]";
+				DWORD error = GetLastError();
+				printf("SymGetSymFromAddr returned error : %ld\n", error);
+			}
+			
+			IMAGEHLP_LINE lineInfo = { sizeof(IMAGEHLP_LINE) };
+			DWORD dwLineDisplacement;
+			if( SymGetLineFromAddr( process, frame.AddrPC.Offset, &dwLineDisplacement, &lineInfo ) )
+			{
+				file = lineInfo.FileName;
+				line = lineInfo.LineNumber;
+				printf( "[Source File : %s]\n", lineInfo.FileName );
+				printf( "[Source Line : %lu]\n", lineInfo.LineNumber );
+			}
+			else
+			{
+				DWORD error = GetLastError();
+				printf("SymGetLineFromAddr returned error : %ld\n", error);
 			}
 		}
 		if (func == NULL) {
@@ -332,7 +355,9 @@ exception_filter(LPEXCEPTION_POINTERS info)
 		SymCleanup(GetCurrentProcess());
 	}
 
-	fputs(g_output , stderr);
+
+	//fputs(g_output , stderr);
+	fputs(g_output , stdout);
 
 	return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -356,7 +381,7 @@ backtrace_unregister(void)
 		g_output = NULL;
 	}
 }
-
+#if 0
 int
 __printf__(const char * format, ...) {
 	int value;
@@ -366,7 +391,7 @@ __printf__(const char * format, ...) {
 	va_end(arg);
 	return value;
 }
-
+#endif
 BOOL WINAPI 
 DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpvReserved)
 {
