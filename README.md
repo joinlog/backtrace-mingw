@@ -8,3 +8,6 @@ feature分支说明,编译环境为win7(64位) + mingw-get-setup完整安装;
 
 # 2.如果想直接使用
 编译好的backtrace.dll和程序运行依赖库libmingwex-0.dll
+
+# 3.注意
+编译环境是XP 32位生成的dll不能正常运行.
