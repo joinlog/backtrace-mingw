@@ -30,6 +30,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdbool.h>
+#include <assert.h>
 
 #define BUFFER_MAX (16*1024)
 
@@ -334,6 +335,26 @@ _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT 
 	}
 }
 
+int output_to_file(char *file, char *content)
+{
+    if (file == NULL) {
+        return 1;
+    }
+    if (content == NULL) {
+        return 2;
+    }
+
+    FILE *fp = fopen(file, "w");
+    if (fp == NULL) {
+        return 3;
+    }
+    
+    fwrite (content , 1 , strlen(content) , fp );
+    fclose (fp);
+    return 0;
+    
+}
+
 static char * g_output = NULL;
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prev = NULL;
 
@@ -358,7 +379,8 @@ exception_filter(LPEXCEPTION_POINTERS info)
 
 	//fputs(g_output , stderr);
 	fputs(g_output , stdout);
-
+    int ret = output_to_file("./exception.log", g_output);
+    assert(ret == 0);
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
