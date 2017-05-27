@@ -39,6 +39,7 @@
 #define BFD_ERR_BAD_FORMAT  (2)
 #define BFD_ERR_NO_SYMBOLS  (3)
 #define BFD_ERR_READ_SYMBOL (4)
+#define BFD_ERR_BAD_FORMAT_NATCH  (5)
 
 static const char *const bfd_errors[] = {
 	"",
@@ -99,6 +100,9 @@ output_print(struct output_buffer *ob, const char * format, ...)
 static void 
 lookup_section(bfd *abfd, asection *sec, void *opaque_data)
 {
+	if (abfd == NULL || sec == NULL || opaque_data == NULL) {
+		return;
+	}
 	struct find_info *data = opaque_data;
 
 	if (data->func)
@@ -154,13 +158,22 @@ init_bfd_ctx(struct bfd_ctx *bc, const char * procname, int *err)
 		if(err) { *err = BFD_ERR_BAD_FORMAT; }
 		return 1;
 	}
-
+	
+	char **formats = 0;
+	if(!bfd_check_format_matches(b, bfd_object, &formats)) {
+		bfd_close(b);
+		if(err) { *err = BFD_ERR_BAD_FORMAT_NATCH; }
+		return 1;
+	}
+	
 	if(!(bfd_get_file_flags(b) & HAS_SYMS)) {
 		bfd_close(b);
+		free(formats);
 		if(err) { *err = BFD_ERR_NO_SYMBOLS; }
 		return 1;
 	}
-
+	free(formats);
+	
 	void *symbol_table;
 
 	unsigned dummy = 0;
@@ -204,7 +217,7 @@ get_bc(struct bfd_set *set , const char *procname, int *err)
 	}
 	struct bfd_ctx bc;
 	if (init_bfd_ctx(&bc, procname, err)) {
-		printf("init_bfd_ctx fail\n");
+		printf("init_bfd_ctx fail err=%d\n", *err);
 		return NULL;
 	}
 	set->next = calloc(1, sizeof(*set));
@@ -227,6 +240,15 @@ release_set(struct bfd_set *set)
 	}
 }
 
+VOID WINAPI RtlCaptureContext(
+   PCONTEXT ContextRecord
+);
+USHORT WINAPI CaptureStackBackTrace(
+        ULONG  FramesToSkip,
+        ULONG  FramesToCapture,
+       PVOID  *BackTrace,
+   PULONG BackTraceHash
+);
 static void
 _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT context)
 {
@@ -236,15 +258,24 @@ _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT 
 	struct bfd_ctx *bc = NULL;
 	int err = BFD_ERR_OK;
 
+		
 	STACKFRAME frame;
 	memset(&frame,0,sizeof(frame));
-
+#if defined(_M_AMD64)
+	frame.AddrPC.Offset = context->Rip;
+	frame.AddrPC.Mode = AddrModeFlat;
+	frame.AddrStack.Offset = context->Rsp;
+	frame.AddrStack.Mode = AddrModeFlat;
+	frame.AddrFrame.Offset = context->Rbp;
+	frame.AddrFrame.Mode = AddrModeFlat;
+#else
 	frame.AddrPC.Offset = context->Eip;
 	frame.AddrPC.Mode = AddrModeFlat;
 	frame.AddrStack.Offset = context->Esp;
 	frame.AddrStack.Mode = AddrModeFlat;
 	frame.AddrFrame.Offset = context->Ebp;
 	frame.AddrFrame.Mode = AddrModeFlat;
+#endif
 
 	HANDLE process = GetCurrentProcess();
 	HANDLE thread = GetCurrentThread();
@@ -252,7 +283,13 @@ _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT 
 	char symbol_buffer[sizeof(IMAGEHLP_SYMBOL) + 255];
 	char module_name_raw[MAX_PATH];
 
-	while(StackWalk(IMAGE_FILE_MACHINE_I386, 
+#if defined(_M_AMD64)
+        const DWORD machine = IMAGE_FILE_MACHINE_AMD64;
+#else
+        const DWORD machine = IMAGE_FILE_MACHINE_I386;
+#endif
+
+	while(StackWalk(machine, 
 		process, 
 		thread, 
 		&frame, 
@@ -261,48 +298,62 @@ _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT 
 		SymFunctionTableAccess, 
 		SymGetModuleBase, 0)) {
 
+		printf("\n\n depth=%d\n", depth);
 		--depth;
 		if (depth < 0)
 			break;
 
+
 		IMAGEHLP_SYMBOL *symbol = (IMAGEHLP_SYMBOL *)symbol_buffer;
 		symbol->SizeOfStruct = (sizeof *symbol) + 255;
 		symbol->MaxNameLength = 254;
-
+		
+#if defined(_WIN64)
+		DWORD64 module_base = SymGetModuleBase(process, frame.AddrPC.Offset);
+#else
 		DWORD module_base = SymGetModuleBase(process, frame.AddrPC.Offset);
+#endif
 		if (module_base == 0 ) {
 			printf("SymGetModuleBase fail\n");
 		}
-		bc = NULL;
+		
 		const char * module_name = "[unknown module]";
 		if (module_base && 
 			GetModuleFileNameA((HINSTANCE)module_base, module_name_raw, MAX_PATH)) {
 			module_name = module_name_raw;
-			bc = get_bc(set, module_name, &err);
 		} else {
 			printf("module_base(%ld)=0 or GetModuleFileNameA fail\n", module_base);
 		}
 
+		
 		const char * file = NULL;
 		const char * func = NULL;
-		unsigned line = 0;
-
+		unsigned line = 0;	
+		bc = get_bc(set, module_name, &err);
 		if (bc) {
 			find(bc,frame.AddrPC.Offset,&file,&func,&line);
+		} else {
+			printf("get_bc fail\n");
 		}
+	
 
-		if (file == NULL) {
+
+		printf("file=%s func=%s line=%d\n", file, func, line);
+		if (func == NULL) {
 			DWORD dummy = 0;
 			if (SymGetSymFromAddr(process, frame.AddrPC.Offset, &dummy, symbol)) {
-				file = symbol->Name;
+				func = symbol->Name;
 			}
 			else {
-				file = "[unknown file]";
+				func = "[unknown func]";
 				DWORD error = GetLastError();
 				printf("SymGetSymFromAddr returned error : %ld\n", error);
 			}
 			
-			IMAGEHLP_LINE lineInfo = { sizeof(IMAGEHLP_LINE) };
+			SymSetOptions(SYMOPT_LOAD_LINES);
+			
+			IMAGEHLP_LINE lineInfo;
+			lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE);			
 			DWORD dwLineDisplacement;
 			if( SymGetLineFromAddr( process, frame.AddrPC.Offset, &dwLineDisplacement, &lineInfo ) )
 			{
@@ -316,6 +367,9 @@ _backtrace(struct output_buffer *ob, struct bfd_set *set, int depth , LPCONTEXT 
 				DWORD error = GetLastError();
 				printf("SymGetLineFromAddr returned error : %ld\n", error);
 			}
+		}
+		if (file == NULL) {
+			file = "[unknown file]";
 		}
 		if (func == NULL) {
 			output_print(ob,"0x%08x : %s : %s %s \n",
@@ -370,7 +424,7 @@ exception_filter(LPEXCEPTION_POINTERS info)
 	else {
 		bfd_init();
 		struct bfd_set *set = calloc(1,sizeof(*set));
-		_backtrace(&ob , set , 128 , info->ContextRecord);
+		_backtrace(&ob , set , 12 , info->ContextRecord);
 		release_set(set);
 
 		SymCleanup(GetCurrentProcess());
