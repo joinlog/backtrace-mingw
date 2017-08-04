@@ -1,0 +1,12 @@
+.PHONY: all clean
+
+all : backtrace_x64.dll test_x64.exe
+
+backtrace_x64.dll : backtrace_x64.c
+	gcc -shared  -m64 -g -Wall -o $@ $^ -lkernel32 -lbfd libiberty.a -limagehlp -lz  libintl-8.dll libiconv-2.dll -gstabs -static  -I/c/mingw-w64/mingw-w64/x86_64-4.9.2-posix-seh-rt_v3-rev1/mingw64/include
+
+test_x64.exe : test_x64.c
+	gcc   -m64 -g -Wall -o $@ $^ backtrace_x64.dll
+
+clean :
+	-del -f backtrace_x64.dll test_x64.exe
